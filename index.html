@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weight log</title>
+<style>
+:root{--bg:#eef2f4;--surface:#fff;--ink:#1d2b33;--muted:#5d6d77;--line:#d3dce1;--accent:#1f6f8b;--up:#b4532a;--down:#2e7d5b}
+@media (prefers-color-scheme:dark){:root{--bg:#141c20;--surface:#1c272c;--ink:#e6eef1;--muted:#93a4ad;--line:#2c3a41;--accent:#5bb4d1;--up:#e08a5f;--down:#5fc08f}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Avenir Next","Segoe UI",system-ui,sans-serif}
+main{max-width:720px;margin:0 auto;padding:24px 16px 48px}
+h1{font-size:2rem;margin:0 0 4px;letter-spacing:-.01em}
+h2{font-size:1.1rem;margin:0 0 12px}
+.sub{margin:0 0 20px;color:var(--muted)}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:16px}
+.row{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end}
+label{display:flex;flex-direction:column;font-size:.85rem;color:var(--muted);gap:4px}
+input,select{font:inherit;padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--ink);min-width:0}
+input[type=number]{width:110px}
+button,.btn{font:inherit;padding:8px 14px;border:1px solid var(--accent);border-radius:6px;background:var(--accent);color:#fff;cursor:pointer}
+.ghost{background:transparent;color:var(--accent)}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+#msg{margin:10px 0 0;min-height:1.4em;color:var(--muted);font-size:.9rem}
+.nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+.nav h2{margin:0}
+.chartbox{position:relative;height:280px}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line)}
+th{font-weight:600;color:var(--muted);font-size:.85rem}
+.up{color:var(--up);font-weight:600}.down{color:var(--down);font-weight:600}
+ul{list-style:none;margin:12px 0 0;padding:0}
+li{display:flex;gap:12px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line)}
+li span{flex:1}
+li button{padding:4px 10px}
+summary{cursor:pointer;font-weight:600}
+.note{color:var(--muted);font-size:.85rem;margin:8px 0 0}
+input[type=file]{display:none}
+</style>
+</head>
+<body>
+<main>
+  <h1>Weight log</h1>
+  <p class="sub" id="summary"></p>
+
+  <section class="card">
+    <h2>Add today’s weight</h2>
+    <div class="row">
+      <label>Date<input type="date" id="date"></label>
+      <label>Weight<input type="number" id="weight" step="0.1" min="0" inputmode="decimal"></label>
+      <label>Unit<select id="unit"><option>lbs</option><option>kg</option></select></label>
+      <button id="add">Save weight</button>
+    </div>
+    <p id="msg" role="status"></p>
+  </section>
+
+  <section class="card">
+    <div class="nav">
+      <button class="ghost" id="prev" aria-label="Previous month">Previous</button>
+      <h2 id="month"></h2>
+      <button class="ghost" id="next" aria-label="Next month">Next</button>
+    </div>
+    <div class="chartbox"><canvas id="chart"></canvas></div>
+  </section>
+
+  <section class="card">
+    <h2>Weekly change</h2>
+    <table>
+      <thead><tr><th>Week of</th><th>Weigh-ins</th><th>Average</th><th>Change</th></tr></thead>
+      <tbody id="weeks"></tbody>
+    </table>
+    <p class="note">Change compares each week’s average to the week before. Weeks start on Monday.</p>
+  </section>
+
+  <section class="card">
+    <details>
+      <summary>All entries and backup</summary>
+      <ul id="entries"></ul>
+      <div class="row" style="margin-top:14px">
+        <button class="ghost" id="export">Export backup</button>
+        <label class="btn ghost" style="flex-direction:row;color:var(--accent)">Import backup<input type="file" id="import" accept="application/json"></label>
+      </div>
+      <p class="note">Entries are saved in this browser only. Export a backup now and then, or to move to another device.</p>
+    </details>
+  </section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const KEY = "weightLog", UKEY = "weightUnit";
+let log = [], unit = "lbs", view = new Date(), chart;
+view.setDate(1);
+try {
+  const saved = JSON.parse(localStorage.getItem(KEY));
+  if (Array.isArray(saved)) log = saved;
+  unit = localStorage.getItem(UKEY) || "lbs";
+} catch (e) {}
+
+const save = () => {
+  try { localStorage.setItem(KEY, JSON.stringify(log)); localStorage.setItem(UKEY, unit); }
+  catch (e) { $("msg").textContent = "Couldn’t save in this browser. Export a backup to be safe."; }
+};
+const pad = n => String(n).padStart(2, "0");
+const iso = d => d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate());
+const parse = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+const weekStart = s => { const d = parse(s); d.setDate(d.getDate() - (d.getDay() + 6) % 7); return iso(d); };
+const fmt = n => n.toFixed(1);
+const sign = n => (n > 0.04 ? "+" : n < -0.04 ? "−" : "") + Math.abs(n).toFixed(1);
+const short = s => parse(s).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+const mean = a => a.reduce((x, y) => x + y, 0) / a.length;
+
+function weeks() {
+  const g = {};
+  log.forEach(e => { (g[weekStart(e.date)] ??= []).push(e.weight); });
+  const keys = Object.keys(g).sort();
+  return keys.map((k, i) => {
+    let change = null;
+    if (i > 0) {
+      const p = parse(keys[i - 1]); p.setDate(p.getDate() + 7);
+      if (iso(p) === k) change = mean(g[k]) - mean(g[keys[i - 1]]);
+    }
+    return { start: k, avg: mean(g[k]), n: g[k].length, change };
+  });
+}
+
+function render() {
+  log.sort((a, b) => a.date.localeCompare(b.date));
+  const w = weeks(), last = log[log.length - 1], cur = w[w.length - 1];
+  let text = last ? `Latest: ${fmt(last.weight)} ${unit} on ${short(last.date)}.` : "Add your first weigh-in below.";
+  if (cur && cur.change !== null) {
+    text += Math.abs(cur.change) < 0.05
+      ? " This week’s average is about the same as last week."
+      : ` This week’s average is ${fmt(Math.abs(cur.change))} ${unit} ${cur.change > 0 ? "higher" : "lower"} than last week.`;
+  }
+  $("summary").textContent = text;
+
+  const y = view.getFullYear(), m = view.getMonth(), days = new Date(y, m + 1, 0).getDate();
+  $("month").textContent = view.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  const data = Array(days).fill(null);
+  log.filter(e => e.date.startsWith(y + "-" + pad(m + 1))).forEach(e => { data[+e.date.slice(8) - 1] = e.weight; });
+  const css = getComputedStyle(document.documentElement), col = n => css.getPropertyValue(n).trim();
+  const axis = t => ({ title: { display: true, text: t, color: col("--muted") }, ticks: { color: col("--muted") }, grid: { color: col("--line") } });
+  if (chart) chart.destroy();
+  chart = new Chart($("chart"), {
+    type: "line",
+    data: { labels: data.map((_, i) => i + 1), datasets: [{ label: "Weight (" + unit + ")", data, spanGaps: true, borderColor: col("--accent"), backgroundColor: col("--accent"), pointRadius: 4, tension: .25 }] },
+    options: { maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { x: axis("Day of month"), y: axis(unit) } }
+  });
+
+  $("weeks").innerHTML = w.slice().reverse().map(r =>
+    `<tr><td>${short(r.start)}</td><td>${r.n}</td><td>${fmt(r.avg)} ${unit}</td><td class="${r.change === null ? "" : r.change > 0.04 ? "up" : r.change < -0.04 ? "down" : ""}">${r.change === null ? "—" : sign(r.change) + " " + unit}</td></tr>`
+  ).join("") || `<tr><td colspan="4">No entries yet.</td></tr>`;
+
+  $("entries").innerHTML = log.slice().reverse().map(e =>
+    `<li><span>${parse(e.date).toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" })}</span><b>${fmt(e.weight)} ${unit}</b><button class="ghost" data-d="${e.date}" aria-label="Delete entry for ${e.date}">Delete</button></li>`
+  ).join("");
+}
+
+function add() {
+  const d = $("date").value, v = parseFloat($("weight").value);
+  if (!d || !(v > 0)) { $("msg").textContent = "Enter a date and a weight."; return; }
+  log = log.filter(e => e.date !== d);
+  log.push({ date: d, weight: v });
+  save();
+  $("weight").value = "";
+  $("msg").textContent = `Saved ${fmt(v)} ${unit} for ${short(d)}.`;
+  view = parse(d); view.setDate(1);
+  render();
+}
+
+$("date").value = iso(new Date());
+$("unit").value = unit;
+$("add").onclick = add;
+$("weight").addEventListener("keydown", e => { if (e.key === "Enter") add(); });
+$("unit").onchange = e => { unit = e.target.value; save(); render(); };
+$("prev").onclick = () => { view.setMonth(view.getMonth() - 1); render(); };
+$("next").onclick = () => { view.setMonth(view.getMonth() + 1); render(); };
+$("entries").onclick = e => {
+  const d = e.target.dataset.d;
+  if (d) { log = log.filter(x => x.date !== d); save(); render(); }
+};
+$("export").onclick = () => {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(log, null, 1)], { type: "application/json" }));
+  a.download = "weight-log.json";
+  a.click();
+};
+$("import").onchange = async e => {
+  try {
+    const arr = JSON.parse(await e.target.files[0].text());
+    const map = new Map(log.map(x => [x.date, x]));
+    arr.forEach(x => { if (x.date && x.weight > 0) map.set(x.date, { date: x.date, weight: +x.weight }); });
+    log = [...map.values()];
+    save(); render();
+    $("msg").textContent = "Backup imported.";
+  } catch (err) { $("msg").textContent = "That file couldn’t be read."; }
+};
+render();
+</script>
+</body>
+</html>
